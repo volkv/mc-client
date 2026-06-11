@@ -1,0 +1,40 @@
+{
+  "name": "volkv/mc-client",
+  "description": "Laravel client for a Mission Control hub: daily business counters, app-error reporting and worker heartbeats over a simple ingest API",
+  "type": "library",
+  "require": {
+    "php": ">=8.1",
+    "illuminate/support": ">=10"
+  },
+  "require-dev": {
+    "phpunit/phpunit": ">=10",
+    "orchestra/testbench": ">=8"
+  },
+  "license": "MIT",
+  "autoload": {
+    "psr-4": {
+      "Volkv\\McClient\\": "src"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Volkv\\McClient\\Tests\\": "tests"
+    }
+  },
+  "authors": [
+    {
+      "name": "Pavel Volkov",
+      "email": "p@volkv.com"
+    }
+  ],
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Volkv\\McClient\\McClientServiceProvider"
+      ]
+    }
+  },
+  "suggest": {
+    "volkv/loggio": "Existing loggio counters are bridged into the daily push automatically while you migrate call sites to Mc::count()"
+  }
+}
