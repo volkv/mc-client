@@ -36,6 +36,7 @@ use Volkv\McClient\Mc;
 
 Mc::count('API Calls');                  // +1 today
 Mc::count('Imported tracks', 25);        // +25 today
+Mc::count('Gemini Cost USD', 0.0123);    // fractional counters (cost etc.), v0.2+
 Mc::setCount('Daily users', 1234);       // absolute value for today
 ```
 

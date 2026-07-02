@@ -79,7 +79,7 @@ class PushCounts implements ShouldQueue
             ->map(fn ($group) => [
                 'event' => (string) $group->first()->event_name,
                 'date' => substr((string) $group->first()->date, 0, 10),
-                'count' => (int) $group->sum('count'),
+                'count' => round((float) $group->sum('count'), 6),
             ])
             ->values();
     }

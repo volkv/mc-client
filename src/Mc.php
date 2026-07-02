@@ -18,7 +18,7 @@ class Mc
 {
     // ---- counters (daily business metrics; loggio's proven mechanics) ----
 
-    public static function count(string $eventName, int $add = 1): void
+    public static function count(string $eventName, int|float $add = 1): void
     {
         if (!self::shouldRun()) {
             return;
@@ -33,7 +33,7 @@ class Mc
         }
     }
 
-    public static function setCount(string $eventName, int $count, ?Carbon $date = null): void
+    public static function setCount(string $eventName, int|float $count, ?Carbon $date = null): void
     {
         if (!self::shouldRun()) {
             return;

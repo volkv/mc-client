@@ -15,4 +15,6 @@ class McCount extends Model
     protected $guarded = [];
 
     protected $table = 'mc_counts';
+
+    protected $casts = ['count' => 'float'];
 }
