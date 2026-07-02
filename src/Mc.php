@@ -24,9 +24,13 @@ class Mc
             return;
         }
 
-        $record = self::record($eventName);
-        $record->count = $record->count ? $record->count + $add : $add;
-        $record->saveQuietly();
+        try {
+            $record = self::record($eventName);
+            $record->count = $record->count ? $record->count + $add : $add;
+            $record->saveQuietly();
+        } catch (Throwable $e) {
+            Log::warning('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
+        }
     }
 
     public static function setCount(string $eventName, int $count, ?Carbon $date = null): void
@@ -35,9 +39,13 @@ class Mc
             return;
         }
 
-        $record = self::record($eventName, $date);
-        $record->count = $count;
-        $record->saveQuietly();
+        try {
+            $record = self::record($eventName, $date);
+            $record->count = $count;
+            $record->saveQuietly();
+        } catch (Throwable $e) {
+            Log::warning('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
+        }
     }
 
     // ---- heartbeats (dead-man-switch for workers/crons) ----
