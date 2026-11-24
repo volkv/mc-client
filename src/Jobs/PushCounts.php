@@ -2,6 +2,7 @@
 
 namespace Volkv\McClient\Jobs;
 
+use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -18,14 +19,17 @@ use Volkv\McClient\Mc;
  *
  * Sources: mc_counts + the legacy `loggio` table while it still exists (bridge for
  * the migration period; rows for the same event+date are summed). The first ever
- * push ships the FULL history (backfill); afterwards only a trailing window —
- * re-pushing a day is harmless, the hub dedupes on read.
+ * push ships the FULL history (backfill). Afterwards every day since the last
+ * successful push, plus a trailing window, is re-sent — so an outage of the hub
+ * loses nothing — capped at `push_max_catchup_days`. Re-pushing a day is harmless,
+ * the hub dedupes on read.
  */
 class PushCounts implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
-    private const BACKFILL_MARKER = 'mc-client:business-backfilled';
+    /** Time of the last fully successful push (the key predates the catch-up and is kept). */
+    private const LAST_PUSH_MARKER = 'mc-client:business-backfilled';
     private const CHUNK = 5000;
 
     public function handle(): void
@@ -34,11 +38,7 @@ class PushCounts implements ShouldQueue
             return;
         }
 
-        $since = Cache::get(self::BACKFILL_MARKER)
-            ? now()->subDays((int) config('mc-client.push_tail_days', 3))->format('Y-m-d')
-            : null; // first run → full history
-
-        $counts = $this->collect($since);
+        $counts = $this->collect($this->since());
         if ($counts->isEmpty()) {
             return;
         }
@@ -53,10 +53,38 @@ class PushCounts implements ShouldQueue
         }
 
         if ($allOk) {
-            Cache::forever(self::BACKFILL_MARKER, now()->toIso8601String());
+            Cache::forever(self::LAST_PUSH_MARKER, now()->toIso8601String());
         } else {
             Log::warning('mc-client: business push incomplete — will retry next run');
         }
+    }
+
+    /** First day to (re-)send; null = full history (first ever push). */
+    private function since(): ?string
+    {
+        $lastPush = Cache::get(self::LAST_PUSH_MARKER);
+        if ($lastPush === null) {
+            return null;
+        }
+
+        $timezone = config('mc-client.timezone', 'Europe/Moscow');
+        $since = Carbon::parse($lastPush)->timezone($timezone)->startOfDay()
+            ->subDays((int) config('mc-client.push_tail_days', 3));
+        $floor = Carbon::now($timezone)->startOfDay()
+            ->subDays((int) config('mc-client.push_max_catchup_days', 90));
+
+        if ($since->lt($floor)) {
+            Log::warning('mc-client: business push gap exceeds the catch-up ceiling, older days are not re-sent', [
+                'last_push' => $lastPush,
+                'unsent_from' => $since->format('Y-m-d'),
+                'sending_from' => $floor->format('Y-m-d'),
+                'full_resend' => 'Cache::forget(\'' . self::LAST_PUSH_MARKER . '\') re-sends the full history',
+            ]);
+
+            return $floor->format('Y-m-d');
+        }
+
+        return $since->format('Y-m-d');
     }
 
     /** Merge mc_counts + legacy loggio rows, summing counts per (date, event). */
