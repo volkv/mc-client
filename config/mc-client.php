@@ -12,10 +12,17 @@ return [
     // Day boundary for counters.
     'timezone' => 'Europe/Moscow',
 
-    // Daily push re-sends this many trailing days (re-push is harmless: the hub
-    // dedupes on read by latest snapshot). First ever push sends full history.
+    // Daily push re-sends every day since the last successful push plus this many
+    // trailing days (re-push is harmless: the hub dedupes on read by latest
+    // snapshot). First ever push sends full history.
     'push_tail_days' => 3,
 
+    // Ceiling for that catch-up after a long hub outage; older days are skipped
+    // with a warning in the log.
+    'push_max_catchup_days' => 90,
+
+    // Seconds. Heartbeats retry once on connection failures and 5xx.
+    'connect_timeout' => 2,
     'http_timeout' => 3,
 
     // Min seconds between reports of the same error fingerprint.
