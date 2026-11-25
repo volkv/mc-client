@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Orchestra\Testbench\TestCase;
 use RuntimeException;
+use Volkv\McClient\Jobs\PushCounts;
 use Volkv\McClient\McClientServiceProvider;
 use Volkv\McClient\Mc;
 use Volkv\McClient\Models\McCount;
@@ -118,5 +119,49 @@ class McTest extends TestCase
         Mc::reportError($error);
 
         Http::assertSentCount(1);
+    }
+
+    /**
+     * A hub outage longer than the trailing window: the days between the last
+     * complete push and the window were never sent again once the hub was back.
+     */
+    public function test_after_an_outage_the_push_reaches_back_to_the_last_complete_push(): void
+    {
+        $hubUp = true;
+        $sent = [];
+        Http::fake(function ($request) use (&$hubUp, &$sent) {
+            if (! $hubUp) {
+                return Http::response('down', 503);
+            }
+            $sent[] = array_column($request['counts'], 'date');
+
+            return Http::response(['ok' => true]);
+        });
+
+        $this->travelTo('2026-11-01 12:00:00');
+        Mc::setCount('Copies', 5, now());
+        (new PushCounts)->handle();                       // backfill, marker = 01.11
+
+        $hubUp = false;
+        foreach (['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05', '2026-11-06'] as $day) {
+            $this->travelTo($day.' 12:00:00');
+            Mc::setCount('Copies', 7, now());
+            (new PushCounts)->handle();                   // fails, marker stays at 01.11
+        }
+
+        $hubUp = true;
+        $sent = [];
+        $this->travelTo('2026-11-10 12:00:00');
+        (new PushCounts)->handle();
+        $dates = array_merge(...$sent);
+        foreach (['2026-11-02', '2026-11-06'] as $day) {
+            $this->assertContains($day, $dates, "{$day} fell outside a 3-day tail and was lost");
+        }
+
+        // Once caught up, the next push is the ordinary trailing window again.
+        $sent = [];
+        $this->travelTo('2026-11-11 12:00:00');
+        (new PushCounts)->handle();
+        $this->assertNotContains('2026-11-02', array_merge([], ...$sent));
     }
 }

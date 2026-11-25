@@ -18,8 +18,8 @@ use Volkv\McClient\Mc;
  *
  * Sources: mc_counts + the legacy `loggio` table while it still exists (bridge for
  * the migration period; rows for the same event+date are summed). The first ever
- * push ships the FULL history (backfill); afterwards only a trailing window —
- * re-pushing a day is harmless, the hub dedupes on read.
+ * push ships the FULL history (backfill); afterwards a trailing window that
+ * reaches back to the last complete push — see since().
  */
 class PushCounts implements ShouldQueue
 {
@@ -34,9 +34,7 @@ class PushCounts implements ShouldQueue
             return;
         }
 
-        $since = Cache::get(self::BACKFILL_MARKER)
-            ? now()->subDays((int) config('mc-client.push_tail_days', 3))->format('Y-m-d')
-            : null; // first run → full history
+        $since = $this->since(Cache::get(self::BACKFILL_MARKER));
 
         $counts = $this->collect($since);
         if ($counts->isEmpty()) {
@@ -57,6 +55,25 @@ class PushCounts implements ShouldQueue
         } else {
             Log::warning('mc-client: business push incomplete — will retry next run');
         }
+    }
+
+    /**
+     * First run (no marker) → full history. Afterwards the trailing window, but
+     * never later than the day of the last complete push: the marker is written
+     * only when every chunk landed, so a hub outage longer than the window used
+     * to leave the days in between unpushed for good. Re-pushing a day is
+     * harmless — the hub dedupes on read.
+     */
+    private function since(?string $lastSuccess): ?string
+    {
+        if ($lastSuccess === null) {
+            return null;
+        }
+
+        $tail = now()->subDays((int) config('mc-client.push_tail_days', 3))->startOfDay();
+        $last = \Illuminate\Support\Carbon::parse($lastSuccess)->startOfDay();
+
+        return ($last->lessThan($tail) ? $last : $tail)->format('Y-m-d');
     }
 
     /** Merge mc_counts + legacy loggio rows, summing counts per (date, event). */
