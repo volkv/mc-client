@@ -82,6 +82,33 @@ class McTest extends TestCase
             && $request['message'] === 'the original failure');
     }
 
+    public function test_a_cache_and_a_logger_down_together_still_do_not_escape(): void
+    {
+        Http::fake();
+        Cache::shouldReceive('add')->andThrow(new RuntimeException('redis is down'));
+        \Illuminate\Support\Facades\Log::shouldReceive('warning')->andThrow(new RuntimeException('log disk full'));
+
+        Mc::reportError(new RuntimeException('the original failure'));
+
+        Http::assertSentCount(1);
+    }
+
+    public function test_a_failed_increment_leaves_no_zero_row(): void
+    {
+        // The increment's UPDATE fails once; the row the INSERT made must go with it.
+        $failed = false;
+        DB::listen(function ($query) use (&$failed): void {
+            if (!$failed && str_starts_with(strtolower($query->sql), 'update') && str_contains($query->sql, 'mc_counts')) {
+                $failed = true;
+                throw new RuntimeException('update failed');
+            }
+        });
+
+        Mc::count('Copies');
+
+        $this->assertSame(0, McCount::count());
+    }
+
     public function test_a_repeated_error_is_still_throttled_while_the_cache_works(): void
     {
         Http::fake();

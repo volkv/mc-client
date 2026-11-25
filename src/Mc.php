@@ -32,10 +32,14 @@ class Mc
         try {
             $key = ['date' => self::day(), 'event_name' => $eventName];
 
-            DB::table((new McCount)->getTable())->insertOrIgnore($key + ['count' => 0]);
-            McCount::query()->where($key)->increment('count', $add);
+            // One transaction: a failed increment must not leave a fresh row at 0 behind,
+            // which PushCounts would ship as the day's measurement.
+            DB::transaction(function () use ($key, $add) {
+                DB::table((new McCount)->getTable())->insertOrIgnore($key + ['count' => 0]);
+                McCount::query()->where($key)->increment('count', $add);
+            });
         } catch (Throwable $e) {
-            Log::warning('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
+            self::warn('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
         }
     }
 
@@ -50,7 +54,7 @@ class Mc
             $record->count = $count;
             $record->saveQuietly();
         } catch (Throwable $e) {
-            Log::warning('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
+            self::warn('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
         }
     }
 
@@ -86,7 +90,7 @@ class Mc
                     return;
                 }
             } catch (Throwable $cacheError) {
-                Log::warning('mc-client error throttle unavailable', ['error' => $cacheError->getMessage()]);
+                self::warn('mc-client error throttle unavailable', ['error' => $cacheError->getMessage()]);
             }
         }
 
@@ -131,13 +135,13 @@ class Mc
                 ->post(rtrim((string) config('mc-client.url'), '/') . $path, $payload);
 
             if ($response->failed()) {
-                Log::warning('mc-client request failed', ['path' => $path, 'status' => $response->status()]);
+                self::warn('mc-client request failed', ['path' => $path, 'status' => $response->status()]);
                 return false;
             }
 
             return true;
         } catch (Throwable $e) {
-            Log::warning('mc-client request failed', ['path' => $path, 'error' => $e->getMessage()]);
+            self::warn('mc-client request failed', ['path' => $path, 'error' => $e->getMessage()]);
             return false;
         }
     }
@@ -147,6 +151,16 @@ class Mc
         $date = self::day($date);
 
         return McCount::firstOrNew(compact('date', 'event_name'));
+    }
+
+    /** A log line that cannot itself throw: the logger may be what is down. */
+    private static function warn(string $message, array $context): void
+    {
+        try {
+            Log::warning($message, $context);
+        } catch (Throwable) {
+            // Nothing left to report to; the contract is that the host never sees this.
+        }
     }
 
     private static function day(?Carbon $date = null): string
