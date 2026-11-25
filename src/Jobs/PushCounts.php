@@ -7,6 +7,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -34,7 +35,11 @@ class PushCounts implements ShouldQueue
             return;
         }
 
-        $since = $this->since(Cache::get(self::BACKFILL_MARKER));
+        // The day being read, taken before the read: a counter that moves after
+        // the read and before a push that finishes past midnight is still in
+        // the window of the next run.
+        $readDay = $this->today();
+        $since = $this->since(Cache::get(self::BACKFILL_MARKER), $readDay);
 
         $counts = $this->collect($since);
         if ($counts->isEmpty()) {
@@ -51,7 +56,7 @@ class PushCounts implements ShouldQueue
         }
 
         if ($allOk) {
-            Cache::forever(self::BACKFILL_MARKER, now()->toIso8601String());
+            Cache::forever(self::BACKFILL_MARKER, $readDay->format('Y-m-d'));
         } else {
             Log::warning('mc-client: business push incomplete — will retry next run');
         }
@@ -59,21 +64,62 @@ class PushCounts implements ShouldQueue
 
     /**
      * First run (no marker) → full history. Afterwards the trailing window, but
-     * never later than the day of the last complete push: the marker is written
-     * only when every chunk landed, so a hub outage longer than the window used
-     * to leave the days in between unpushed for good. Re-pushing a day is
-     * harmless — the hub dedupes on read.
+     * reaching back to the day the last complete push read: the marker is
+     * written only when every chunk landed, so a hub outage longer than the
+     * window used to leave the days in between unpushed for good. Re-pushing a
+     * day is harmless — the hub dedupes on read.
+     *
+     * The catch-up is capped (push_max_catchup_days): a chunk the hub rejects
+     * for good would otherwise keep the marker in place and grow every push by
+     * a day, forever. Days past the cap are given up, loudly.
+     *
+     * All days are counter days, in mc-client.timezone — the zone mc_counts.date
+     * is written in — not the app's.
      */
-    private function since(?string $lastSuccess): ?string
+    private function since(mixed $marker, Carbon $today): ?string
     {
-        if ($lastSuccess === null) {
+        if ($marker === null) {
             return null;
         }
 
-        $tail = now()->subDays((int) config('mc-client.push_tail_days', 3))->startOfDay();
-        $last = \Illuminate\Support\Carbon::parse($lastSuccess)->startOfDay();
+        $tail = $today->copy()->subDays((int) config('mc-client.push_tail_days', 3));
+        $floor = $today->copy()->subDays((int) config('mc-client.push_max_catchup_days', 30));
 
-        return ($last->lessThan($tail) ? $last : $tail)->format('Y-m-d');
+        $last = $this->markerDay($marker);
+        if ($last === null || $last->greaterThanOrEqualTo($tail)) {
+            return $tail->format('Y-m-d');
+        }
+        if ($last->lessThan($floor)) {
+            Log::warning('mc-client: business push has not completed since '.$last->format('Y-m-d').'; days before '.$floor->format('Y-m-d').' are no longer re-sent');
+
+            return $floor->format('Y-m-d');
+        }
+
+        return $last->format('Y-m-d');
+    }
+
+    /** The marker as a counter day: Y-m-d now, an ISO time before 0.2.2; anything else → null. */
+    private function markerDay(mixed $marker): ?Carbon
+    {
+        if (!is_string($marker)) {
+            return null;
+        }
+        $timezone = config('mc-client.timezone', 'Europe/Moscow');
+
+        try {
+            return preg_match('/^\d{4}-\d{2}-\d{2}$/', $marker) === 1
+                ? Carbon::createFromFormat('Y-m-d', $marker, $timezone)->startOfDay()
+                : Carbon::parse($marker)->timezone($timezone)->startOfDay();
+        } catch (\Throwable) {
+            Log::warning('mc-client: unreadable business push marker, re-sending the trailing window only');
+
+            return null;
+        }
+    }
+
+    private function today(): Carbon
+    {
+        return Carbon::now()->timezone(config('mc-client.timezone', 'Europe/Moscow'))->startOfDay();
     }
 
     /** Merge mc_counts + legacy loggio rows, summing counts per (date, event). */

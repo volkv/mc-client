@@ -16,6 +16,11 @@ return [
     // dedupes on read by latest snapshot). First ever push sends full history.
     'push_tail_days' => 3,
 
+    // After a hub outage the push reaches back to the last complete one, but no
+    // further than this: a chunk the hub rejects for good must not grow every
+    // later push forever.
+    'push_max_catchup_days' => 30,
+
     'http_timeout' => 3,
 
     // Min seconds between reports of the same error fingerprint.
