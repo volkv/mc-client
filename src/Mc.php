@@ -4,6 +4,7 @@ namespace Volkv\McClient;
 
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -24,10 +25,15 @@ class Mc
             return;
         }
 
+        // Two statements, each atomic in the database, instead of read-modify-write in PHP:
+        // two requests that both read n and both wrote n+1 lost one increment, and two first
+        // events of a day raced on the unique key (codex audit 15.11, MC-01). The row is made
+        // to exist, then incremented in place — the database serialises the increments.
         try {
-            $record = self::record($eventName);
-            $record->count = $record->count ? $record->count + $add : $add;
-            $record->saveQuietly();
+            $key = ['date' => self::day(), 'event_name' => $eventName];
+
+            DB::table((new McCount)->getTable())->insertOrIgnore($key + ['count' => 0]);
+            McCount::query()->where($key)->increment('count', $add);
         } catch (Throwable $e) {
             Log::warning('mc-client counter write failed', ['event' => $eventName, 'error' => $e->getMessage()]);
         }
@@ -69,10 +75,19 @@ class Mc
 
         $fingerprint = get_class($e) . ':' . self::relativePath($e->getFile()) . ':' . $e->getLine();
 
-        // throttle repeats of the same fingerprint client-side
+        // Throttle repeats of the same fingerprint client-side. The cache is the first thing
+        // to fail in an outage — exactly when errors are reported — and an exception from here
+        // escaped into the host's exception handler and cut its other reporters off (MC-02).
+        // Without the cache the report still goes out: the hub dedupes by fingerprint anyway.
         $throttle = (int) config('mc-client.error_throttle_seconds', 60);
-        if ($throttle > 0 && !Cache::add('mc-client:err:' . md5($fingerprint), 1, $throttle)) {
-            return;
+        if ($throttle > 0) {
+            try {
+                if (!Cache::add('mc-client:err:' . md5($fingerprint), 1, $throttle)) {
+                    return;
+                }
+            } catch (Throwable $cacheError) {
+                Log::warning('mc-client error throttle unavailable', ['error' => $cacheError->getMessage()]);
+            }
         }
 
         self::post('/api/ingest/error', [
@@ -129,11 +144,16 @@ class Mc
 
     private static function record(string $event_name, ?Carbon $date = null): McCount
     {
-        $date = ($date ?? Carbon::now())
-            ->timezone(config('mc-client.timezone', 'Europe/Moscow'))
-            ->format('Y-m-d');
+        $date = self::day($date);
 
         return McCount::firstOrNew(compact('date', 'event_name'));
+    }
+
+    private static function day(?Carbon $date = null): string
+    {
+        return ($date ?? Carbon::now())
+            ->timezone(config('mc-client.timezone', 'Europe/Moscow'))
+            ->format('Y-m-d');
     }
 
     private static function relativePath(string $file): string
